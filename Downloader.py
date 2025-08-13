@@ -10,14 +10,14 @@ from tkinter.constants import RIGHT, Y, BOTH
 import requests
 
 from utils.DownloadItem import DownloadItem
-from utils.ToolBox import convert_bytes
+from utils.ToolBox import convert_bytes, txt2filename, getStreamingData
 from utils.muxer import DashedWritter
 from utils.muxer.DashedParser import DashedParser
 from widgets.DownloadsFrame import DownloadsFrame
 from widgets.HomeFrame import HomeFrame
 from widgets.PlayerFrame import PlayerFrame
 from widgets.SidebarFrame import SidebarFrame
-
+import tkinter.font as tkfont
 
 class DownloaderApp(tk.Tk):
     download_models_list = []
@@ -25,7 +25,7 @@ class DownloaderApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Downloader App")
+        self.title("TinyDownloader")
 
         # Shared state
         self.continuationToken = tk.StringVar()
@@ -42,9 +42,10 @@ class DownloaderApp(tk.Tk):
             self.BodyContainer,
             continuationvar=self.continuationToken,
             collectedVideos=self.collectedVideoIds,
-            formatSelect=self.format_selected
+            formatSelect=self.sortFormats
         )
         self.CurrentBodyFrame.pack(side=RIGHT, anchor="n", fill=BOTH, expand=True)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         def on_home():
             if self.CurrentBodyFrame is not None:
@@ -56,7 +57,7 @@ class DownloaderApp(tk.Tk):
                 self.BodyContainer,
                 continuationvar=self.continuationToken,
                 collectedVideos=self.collectedVideoIds,
-                formatSelect=self.format_selected
+                formatSelect=self.sortFormats
             )
             self.CurrentBodyFrame.pack(side=RIGHT, anchor="n", fill=BOTH, expand=True)
 
@@ -65,7 +66,7 @@ class DownloaderApp(tk.Tk):
                 if isinstance(self.CurrentBodyFrame, PlayerFrame):
                     self.CurrentBodyFrame.playPause()
                 self.CurrentBodyFrame.pack_forget()
-            self.CurrentBodyFrame = DownloadsFrame(self.BodyContainer,runningDownloads=self.download_models_list)
+            self.CurrentBodyFrame = DownloadsFrame(self.BodyContainer,runningDownloads=self.download_models_list,playFunction=self.playFunction)
             self.CurrentBodyFrame.pack(side=RIGHT, anchor="n", fill=BOTH, expand=True)
 
         def on_playerFrame():
@@ -85,6 +86,14 @@ class DownloaderApp(tk.Tk):
         )
         self.LeftFrame.pack(pady=10, fill=Y, expand=Y, padx=10)
 
+    def playFunction(self,filepath):
+        if self.CurrentBodyFrame is not None:
+            if isinstance(self.CurrentBodyFrame, PlayerFrame):
+                self.CurrentBodyFrame.playPause()
+            self.CurrentBodyFrame.pack_forget()
+        self.CurrentBodyFrame = PlayerFrame(self.BodyContainer,filePath=filepath)
+        self.CurrentBodyFrame.pack(side=RIGHT, anchor="n", fill=BOTH, expand=True)
+
 
     def format_selected(self, fmt1, fmt2,fileName,videoId,duration):
         item = DownloadItem(self)
@@ -103,9 +112,6 @@ class DownloaderApp(tk.Tk):
             item.fileName = f"{fileName}.mp4"
         self.download_models_list.append(item)
         self.downloader_function(item)
-
-
-
 
 
     def download_as_9mb(self,download_item, url: str, fos, total_bytes: int):
@@ -129,6 +135,7 @@ class DownloaderApp(tk.Tk):
                         (int(int(download_item.onDisk + download_item.inRam) / total_bytes * 100)))
                     download_item.progress_var.set(
                         f"Progress   {convert_bytes(download_item.inRam + download_item.onDisk)}/{convert_bytes(total_bytes)}    {download_item.progress_percent.get()}%   {download_item.suffix}")
+                    print(f"{convert_bytes(download_item.inRam + download_item.onDisk)}/{convert_bytes(total_bytes)}    {download_item.progress_percent.get()}%   {download_item.suffix}")
                     if download_item.continue_flag is False:
                         return
 
@@ -236,6 +243,129 @@ class DownloaderApp(tk.Tk):
             writer = DashedWritter.DashedWriter(pathlib.Path(final), [audio, video], muxingProgress)
             writer.build_non_fmp4()
             return True
+
+    def build_dialog(self, formats, on_select_itag, type):
+        dlg = tk.Toplevel(self)
+        dlg.title("Select Video Format")
+
+        width, height = 500, 300
+        dlg.geometry(f"{width}x{height}")
+
+        dlg.update_idletasks()
+        screen_width = dlg.winfo_screenwidth()
+        screen_height = dlg.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        dlg.geometry(f"{width}x{height}+{x}+{y}")
+
+        tk.Label(dlg, text="Available formats:").pack(pady=5)
+
+        list_font = tkfont.Font(family="Helvetica", size=10)
+
+        sb = tk.Scrollbar(dlg)
+        sb.pack(side="right", fill="y")
+
+        lb = tk.Listbox(dlg, yscrollcommand=sb.set, font=list_font)
+        lb.pack(side="top", fill="both", expand=True, padx=5, pady=5)
+        sb.config(command=lb.yview)
+
+        # Dict to store format details and itags
+        itag_map = {}
+        display_map = {}
+
+        for fmt in formats:
+            mime = fmt["mimeType"]
+            if type in mime:
+                if "audio" in mime:
+                    display = f'Audio {convert_bytes(fmt["bitrate"])}/s   {convert_bytes(int(fmt["contentLength"]))}'
+                else:
+                    if "webm" in mime:
+                        display = f'{fmt["qualityLabel"]}   {convert_bytes(int(fmt["contentLength"]))}   {mime}'
+                    else:
+                        display = f'{fmt["qualityLabel"]}   {convert_bytes(int(fmt["contentLength"]))}   {mime} 👍'
+                index = lb.size()
+                lb.insert(tk.END, display)
+                itag_map[index] = fmt["itag"]
+                display_map[index] = display  # Save for button text
+
+        # Button text will change dynamically
+        download_btn = tk.Button(dlg, text="Download Selected Format", state="disabled", command=lambda: on_select())
+        download_btn.pack(pady=10)
+
+        def on_listbox_select(event):
+            sel = lb.curselection()
+            if sel:
+                index = sel[0]
+                # Enable and update button text
+                download_btn.config(text=f"Download: {display_map[index]}", state="normal")
+
+        def on_select():
+            sel = lb.curselection()
+            if sel:
+                index = sel[0]
+                selected_itag = itag_map.get(index)
+                if selected_itag is not None:
+                    on_select_itag(selected_itag)
+                dlg.destroy()
+
+        # Bind selection change
+        lb.bind("<<ListboxSelect>>", on_listbox_select)
+
+    def sortFormats(self,responseJosn,type):
+        if "playerResponse" in responseJosn:
+            playerResponse = responseJosn["playerResponse"]
+            videoTitle = txt2filename(playerResponse["videoDetails"]["title"])
+            videoId = txt2filename(playerResponse["videoDetails"]["videoId"])
+            if "streamingData" in playerResponse:
+                def download_selected_format(fmt):
+                    print("sorting formats")
+                    containerType = "mp4"
+                    collectedFmts = playerResponse["streamingData"]["adaptiveFormats"]
+
+                    found = False
+                    selected_fmt = None
+
+                    # Find the selected format
+                    for fmt_ in collectedFmts:
+                        if fmt_["itag"] == int(fmt):
+                            found = True
+                            selected_fmt = fmt_
+                            break  # found our main format
+
+                    if not found:
+                        print("no formats found")
+                        return
+
+                    # If it's audio only
+                    if "audio" in selected_fmt["mimeType"]:
+                        self.format_selected(selected_fmt, selected_fmt,videoTitle,videoId,"4:30")
+                        return
+
+                    # If it's video → decide container type
+                    if "webm" in selected_fmt["mimeType"]:
+                        containerType = "webm"
+
+                    # Find matching audio track
+                    audio_itag = 140 if containerType == "mp4" else 251
+                    audio_fmt = next((f for f in collectedFmts if f["itag"] == audio_itag), None)
+
+                    if audio_fmt:
+                        self.format_selected(selected_fmt, audio_fmt,videoTitle,videoId,"4:30")
+                    else:
+                        print(f"No matching audio format found for {containerType}")
+
+                self.build_dialog(playerResponse["streamingData"]["adaptiveFormats"], download_selected_format, type)
+            else:
+                print("formts not found")
+        else:
+            print("playerResponseNotFound")
+
+    def on_close(self):
+        for item in self.download_models_list:
+            item.continue_flag.clear()
+        self.destroy()  # actually close the window
+
+
 
 if __name__ == "__main__":
     app = DownloaderApp()
