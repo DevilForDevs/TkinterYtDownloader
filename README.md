@@ -20,6 +20,8 @@
 - Main app with global search items and downloads list to sustains tabs change.
 - A search screen where you can search youtube videos and init download it uses global list of search items.
 - A downloads screen where all running/finished downloads will show.
+- Youtube apis calls and json praser.
+- A pure and simple python muxer that can mux mp4(avc1,av01).
 
 
 
